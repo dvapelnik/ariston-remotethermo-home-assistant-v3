@@ -13,6 +13,6 @@
   "loggers": ["ariston"],
   "requirements": ["ariston @ git+https://github.com/dvapelnik/python-ariston-api@feature/hp-menu-item-families"],
   "ssdp": [],
-  "version": "0.20.13",
+  "version": "0.20.15",
   "zeroconf": []
 }

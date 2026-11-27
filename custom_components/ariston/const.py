@@ -40,6 +40,7 @@ from homeassistant.components.switch import SwitchEntityDescription
 from homeassistant.const import (
     UnitOfEnergy,
     UnitOfFrequency,
+    UnitOfPower,
     UnitOfTemperature,
     UnitOfTime,
 )
@@ -66,6 +67,8 @@ BUS_ERRORS_COORDINATOR: Final[str] = "bus_errors_coordinator"
 BUS_ERRORS_SCAN_INTERVAL: Final[str] = "bus_errors_scan_interval"
 API_URL_SETTING: Final[str] = "api_url_setting"
 API_USER_AGENT: Final[str] = "api_user_agent"
+
+RATED_POWER_W: Final[str] = "rated_power_w"
 
 DEFAULT_SCAN_INTERVAL_SECONDS: Final[int] = 180
 DEFAULT_ENERGY_SCAN_INTERVAL_MINUTES: Final[int] = 60
@@ -115,6 +118,20 @@ def _get_ch_heat_request(entity: Any) -> bool:
     return bool(entity.device.get_zone_heat_request_value(entity.zone))
 
 
+def _get_estimated_power(entity: Any) -> int | None:
+    """Estimate the instantaneous power of a resistive water heater.
+
+    The rated power while heating, 0 while idle. None when no rated power is
+    configured or the heating state is unknown, so the sensor reports unknown
+    instead of a misleading 0 W.
+    """
+    rated_power_w = entity.coordinator.rated_power_w
+    is_heating = entity.device.is_heating
+    if rated_power_w is None or is_heating is None:
+        return None
+    return rated_power_w if is_heating else 0
+
+
 def _get_dhw_current_temperature(entity: Any) -> float | None:
     """Return the measured DHW temperature, never the target as a substitute.
 
@@ -147,6 +164,7 @@ class AristonBaseEntityDescription(EntityDescription):
     """An abstract class that describes Ariston entites."""
 
     device_features: list[str] | None = None
+    device_features_any: list[str] | None = None
     coordinator: str = COORDINATOR
     extra_states: list[dict[str, Any]] | None = None
     system_types: list[SystemType] | None = None
@@ -857,6 +875,8 @@ ARISTON_SENSOR_TYPES: list[AristonSensorEntityDescription] = [
         system_types=[SystemType.VELIS],
         whe_types=[
             WheType.Evo,
+            WheType.Lydos,
+            WheType.LydosHybrid,
         ],
     ),
     AristonSensorEntityDescription(
@@ -892,6 +912,29 @@ ARISTON_SENSOR_TYPES: list[AristonSensorEntityDescription] = [
         ),
         system_types=[SystemType.VELIS],
         whe_types=[WheType.NuosSplit],
+    ),
+    AristonSensorEntityDescription(
+        key="Instantaneous power",
+        name=f"{NAME} instantaneous power",
+        icon="mdi:lightning-bolt",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        coordinator=COORDINATOR,
+        system_types=[SystemType.VELIS],
+        whe_types=[
+            WheType.Evo,
+            WheType.Evo2,
+            # Resistive heaters with a single heating power only, so that
+            # rated power x heating state holds. Excluded on purpose:
+            # hybrid heat pump models (LydosHybrid), whose power modulates,
+            # and Lux2, whose POWER mode heats with more power than normal
+            # mode, so one rating is wrong in at least one of the two.
+            WheType.Lydos,
+            WheType.Lux,
+            WheType.Andris2,
+        ],
+        get_native_value=_get_estimated_power,
     ),
     AristonSensorEntityDescription(
         key=DeviceProperties.DHW_STORAGE_TEMPERATURE,
@@ -949,7 +992,7 @@ ARISTON_BINARY_SENSOR_TYPES: list[AristonBinarySensorEntityDescription] = [
         name=f"{NAME} is heating pump on",
         icon="mdi:heat-pump-outline",
         get_is_on=lambda entity: entity.device.is_heating_pump_on_value,
-        device_features=[DeviceFeatures.HYBRID_SYS],
+        device_features_any=[DeviceFeatures.HYBRID_SYS, DeviceFeatures.HP_SYS],
         system_types=[SystemType.GALEVO],
     ),
     AristonBinarySensorEntityDescription(
