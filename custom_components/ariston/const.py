@@ -1104,6 +1104,15 @@ ARISTON_SWITCH_TYPES: list[AristonSwitchEntityDescription] = [
         system_types=[SystemType.GALEVO],
     ),
     AristonSwitchEntityDescription(
+        key=DeviceProperties.IS_DHW_BOOST,
+        name=f"{NAME} DHW boost",
+        icon="mdi:water-boiler",
+        device_features=[DeviceProperties.IS_DHW_BOOST],
+        set_value=lambda entity, value: entity.device.async_set_dhw_boost(value),
+        get_is_on=lambda entity: entity.device.dhw_boost_value,
+        system_types=[SystemType.GALEVO],
+    ),
+    AristonSwitchEntityDescription(
         key=EvoDeviceProperties.ECO,
         name=f"{NAME} eco mode",
         icon="mdi:leaf",

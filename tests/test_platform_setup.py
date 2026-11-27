@@ -437,6 +437,66 @@ async def test_heat_pump_without_em20_gets_menu_item_entities(hass):
     await real_coordinator.async_shutdown()
 
 
+@pytest.mark.parametrize(
+    ("features", "boost_item", "expected"),
+    [
+        ({}, {PropertyType.VALUE: 0.0}, True),
+        ({DeviceFeatures.HYBRID_SYS: True}, {PropertyType.VALUE: 0.0}, False),
+        ({DeviceFeatures.HP_SYS: False}, {PropertyType.VALUE: 0.0}, False),
+        ({}, {PropertyType.VALUE: 0.0, "error": True}, False),
+        ({}, None, False),
+    ],
+)
+async def test_dhw_boost_switch_is_for_heat_pumps_that_report_it(
+    hass, features, boost_item, expected
+):
+    device = _make_real_galevo_device([[]])
+    device.features.update(features)
+    items = []
+    if boost_item is not None:
+        items.append(
+            {
+                "id": DeviceProperties.IS_DHW_BOOST,
+                PropertyType.ZONE: 0,
+                **boost_item,
+            }
+        )
+    device.api.async_get_properties = AsyncMock(return_value={"items": items})
+    device.api.async_set_property = AsyncMock()
+    real_coordinator = DeviceDataUpdateCoordinator(
+        hass, device, 300, COORDINATOR, device.async_update_state
+    )
+    await real_coordinator.async_refresh()
+
+    hass.data[DOMAIN] = {
+        "entry-1": {
+            COORDINATOR: real_coordinator,
+            ENERGY_COORDINATOR: real_coordinator,
+            BUS_ERRORS_COORDINATOR: real_coordinator,
+        }
+    }
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="entry-1", data={})
+    entry.add_to_hass(hass)
+
+    added_switches = []
+    await switch.async_setup_entry(hass, entry, added_switches.extend)
+    switches = {entity.entity_description.key: entity for entity in added_switches}
+
+    assert (DeviceProperties.IS_DHW_BOOST in switches) is expected
+    if expected:
+        boost = switches[DeviceProperties.IS_DHW_BOOST]
+        assert boost.is_on is False
+        await boost.entity_description.set_value(boost, True)
+        assert device.api.async_set_property.await_args.args[3:6] == (
+            DeviceProperties.IS_DHW_BOOST,
+            1.0,
+            0.0,
+        )
+        assert boost.is_on is True
+
+    await real_coordinator.async_shutdown()
+
+
 async def test_heat_pump_with_em20_has_no_em20_free_menu_item_entities(hass):
     device = _make_real_galevo_device(
         [
