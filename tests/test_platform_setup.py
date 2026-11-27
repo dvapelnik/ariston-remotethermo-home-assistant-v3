@@ -37,6 +37,7 @@ from custom_components.ariston.const import (
     MENU_ITEM_HP_MODE,
     MENU_ITEM_HP_OUTSIDE_AIR_TEMP,
     MENU_ITEM_HP_WATER_FLOW_TEMP,
+    _get_dhw_current_temperature,
 )
 from custom_components.ariston.coordinator import DeviceDataUpdateCoordinator
 from custom_components.ariston.binary_sensor import SERVICE_CREATE_VACATION
@@ -275,3 +276,164 @@ async def test_delayed_menu_recovery_registers_entities_after_initial_http_550(h
 
     await real_coordinator.async_shutdown()
 
+
+def _hp_sys_menu_items():
+    """Menu items as reported by a heat pump without an EM20 energy manager."""
+
+    def item(item_id, value, unit="", **extra):
+        return {
+            "id": item_id,
+            PropertyType.VALUE: value,
+            PropertyType.UNIT: unit,
+            "error": False,
+            **extra,
+        }
+
+    on_off = {PropertyType.OPTIONS: {"0": "OFF", "1": "ON"}, "isEnum": True}
+    return [
+        item(MenuItemNames.SIGNAL_STRENGTH.value, 90.0, "%"),
+        item(
+            60,
+            3.0,
+            isEnum=True,
+            **{PropertyType.OPTIONS: {"0": "OFF", "3": "Heating", "9": "Defrost"}},
+        ),
+        item(71, 1.0, "°C"),
+        item(264, 36.0, "°C"),
+        item(265, 34.0, "°C"),
+        item(263, 39.0, "°C"),
+        item(266, 32.0, "Hz"),
+        item(67, 46.0, "°C"),
+        item(68, 0.0, **on_off),
+        item(69, 1.0, **on_off),
+        item(70, 0.0, **on_off),
+        item(253, 77.0),
+        item(254, 199.0),
+        item(259, 1.0),
+        item(260, 0.0),
+        item(261, 84.0),
+        item(262, 13.0),
+        item(255, 1.0),
+        item(256, 0.0),
+        item(257, 0.0),
+        item(258, 6.0),
+    ]
+
+
+async def test_heat_pump_without_em20_gets_menu_item_entities(hass):
+    device = _make_real_galevo_device([_hp_sys_menu_items()])
+    device.features[DeviceFeatures.HAS_EM20] = False
+    real_coordinator = DeviceDataUpdateCoordinator(
+        hass, device, 300, COORDINATOR, device.async_update_state
+    )
+    await real_coordinator.async_refresh()
+
+    hass.data[DOMAIN] = {
+        "entry-1": {
+            COORDINATOR: real_coordinator,
+            ENERGY_COORDINATOR: real_coordinator,
+            BUS_ERRORS_COORDINATOR: real_coordinator,
+        }
+    }
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="entry-1", data={})
+    entry.add_to_hass(hass)
+
+    added_sensors = []
+    await sensor.async_setup_entry(hass, entry, added_sensors.extend)
+    sensors = {entity.entity_description.key: entity for entity in added_sensors}
+
+    expected_values = {
+        str(MENU_ITEM_HP_MODE): "Heating",
+        str(MENU_ITEM_HP_OUTSIDE_AIR_TEMP): 1.0,
+        str(MENU_ITEM_HP_WATER_FLOW_TEMP): 36.0,
+        str(MenuItemNames.CH_RETURN_TEMP): 34.0,
+        "263": 39.0,
+        "266": 32.0,
+        "253": 770,
+        "254": 1990,
+        "259": 10,
+        "261": 840,
+        "260": 0,
+        "262": 130,
+        "255": 10,
+        "258": 60,
+        "256": 0,
+        "257": 0,
+    }
+    assert expected_values.keys() <= sensors.keys()
+    for key, value in expected_values.items():
+        assert sensors[key].native_value == value, key
+
+    assert sensors["263"].native_unit_of_measurement == "°C"
+    assert sensors["266"].native_unit_of_measurement == "Hz"
+    assert sensors["253"].native_unit_of_measurement == "h"
+    assert sensors["254"].native_unit_of_measurement is None
+    assert sensors["253"].entity_description.entity_registry_enabled_default
+    assert not sensors["256"].entity_description.entity_registry_enabled_default
+    assert not sensors["257"].entity_description.entity_registry_enabled_default
+    names = [entity.entity_description.name for entity in added_sensors]
+    assert len(names) == len(set(names))
+
+    added_binary_sensors = []
+    await binary_sensor.async_setup_entry(hass, entry, added_binary_sensors.extend)
+    binary_sensors = {
+        entity.entity_description.key: entity for entity in added_binary_sensors
+    }
+    assert binary_sensors[str(MENU_ITEM_CH_BACKUP_RESISTANCE_1)].is_on is False
+    assert binary_sensors["69"].is_on is True
+    assert binary_sensors["70"].is_on is False
+    assert not binary_sensors["69"].entity_description.entity_registry_enabled_default
+
+    dhw_entity = MagicMock(device=device)
+    assert _get_dhw_current_temperature(dhw_entity) == 46.0
+    device.menu_items = [
+        item for item in device.menu_items if item["id"] != 67
+    ]
+    assert _get_dhw_current_temperature(dhw_entity) is None
+
+    await real_coordinator.async_shutdown()
+
+
+async def test_heat_pump_with_em20_has_no_em20_free_menu_item_entities(hass):
+    device = _make_real_galevo_device(
+        [
+            [
+                {
+                    "id": MenuItemNames.SIGNAL_STRENGTH.value,
+                    PropertyType.VALUE: 80,
+                    PropertyType.UNIT: "%",
+                }
+            ],
+            [],
+            [],
+            [],
+            [],
+        ]
+    )
+    device.features[DeviceFeatures.HAS_EM20] = True
+    real_coordinator = DeviceDataUpdateCoordinator(
+        hass, device, 300, COORDINATOR, device.async_update_state
+    )
+    await real_coordinator.async_refresh()
+
+    hass.data[DOMAIN] = {
+        "entry-1": {
+            COORDINATOR: real_coordinator,
+            ENERGY_COORDINATOR: real_coordinator,
+            BUS_ERRORS_COORDINATOR: real_coordinator,
+        }
+    }
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="entry-1", data={})
+    entry.add_to_hass(hass)
+
+    added_sensors = []
+    await sensor.async_setup_entry(hass, entry, added_sensors.extend)
+    sensor_keys = {entity.entity_description.key for entity in added_sensors}
+    assert {"253", "254", "263", "266"}.isdisjoint(sensor_keys)
+
+    added_binary_sensors = []
+    await binary_sensor.async_setup_entry(hass, entry, added_binary_sensors.extend)
+    binary_keys = {entity.entity_description.key for entity in added_binary_sensors}
+    assert {"69", "70"}.isdisjoint(binary_keys)
+
+    await real_coordinator.async_shutdown()

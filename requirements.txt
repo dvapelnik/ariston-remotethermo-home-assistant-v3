@@ -1,2 +1,2 @@
-ariston==0.19.21
+ariston @ git+https://github.com/dvapelnik/python-ariston-api@feature/hp-menu-item-families
 homeassistant>=2026.11.1

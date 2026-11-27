@@ -37,7 +37,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.components.switch import SwitchEntityDescription
-from homeassistant.const import UnitOfEnergy, UnitOfTemperature, UnitOfTime
+from homeassistant.const import (
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.helpers.entity import EntityCategory, EntityDescription
 
 try:
@@ -76,6 +81,21 @@ MENU_ITEM_CH_BACKUP_RESISTANCE_1: Final[int] = 337
 MENU_ITEM_HP_MODE: Final[int] = 340
 MENU_ITEM_HP_OUTSIDE_AIR_TEMP: Final[int] = 341
 MENU_ITEM_HP_WATER_FLOW_TEMP: Final[int] = 348
+# Heat pump systems without an EM20 energy manager report these IDs.
+MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_2: Final[int] = 69
+MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_3: Final[int] = 70
+MENU_ITEM_HP_SYS_RUNNING_HOURS: Final[int] = 253
+MENU_ITEM_HP_SYS_ON_CYCLES: Final[int] = 254
+MENU_ITEM_HP_SYS_RESISTANCE_1_RUNNING_HOURS: Final[int] = 255
+MENU_ITEM_HP_SYS_RESISTANCE_2_RUNNING_HOURS: Final[int] = 256
+MENU_ITEM_HP_SYS_RESISTANCE_3_RUNNING_HOURS: Final[int] = 257
+MENU_ITEM_HP_SYS_RESISTANCE_1_ON_CYCLES: Final[int] = 258
+MENU_ITEM_HP_SYS_DEFROST_HOURS: Final[int] = 259
+MENU_ITEM_HP_SYS_COOLING_RUNNING_HOURS: Final[int] = 260
+MENU_ITEM_HP_SYS_HEATING_RUNNING_HOURS: Final[int] = 261
+MENU_ITEM_HP_SYS_DHW_RUNNING_HOURS: Final[int] = 262
+MENU_ITEM_HP_SYS_CH_FLOW_SETPOINT_TEMP: Final[int] = 263
+MENU_ITEM_HP_SYS_COMPRESSOR_FREQUENCY: Final[int] = 266
 
 ATTR_TARGET_TEMP_STEP: Final[str] = "target_temp_step"
 ATTR_HEAT_REQUEST: Final[str] = "heat_request"
@@ -100,12 +120,13 @@ def _get_dhw_current_temperature(entity: Any) -> float | None:
 
     The GALEVO getter falls back to the target temperature when the device has
     no usable storage temperature reading, so that case must report no value.
+    A heat pump without EM20 reports its storage temperature as a menu item.
     """
     device = entity.device
     if device.system_type == SystemType.GALEVO and not device.custom_features.get(
         DeviceProperties.DHW_STORAGE_TEMPERATURE
     ):
-        return None
+        return device.hp_dhw_storage_temp_value
 
     return device.water_heater_current_temperature
 
@@ -267,6 +288,29 @@ ARISTON_WATER_HEATER_TYPES: list[AristonWaterHeaterEntityDescription] = [
     ),
 ]
 
+def _hp_counter_sensor(
+    menu_item_id: int,
+    name: str,
+    device_property: str,
+    enabled_by_default: bool = True,
+) -> AristonSensorEntityDescription:
+    """Describe a heat pump running-hours or on-cycles counter sensor."""
+    is_hours = name.endswith("hours")
+    return AristonSensorEntityDescription(
+        key=str(menu_item_id),
+        name=f"{NAME} {name}",
+        icon="mdi:timer-outline" if is_hours else "mdi:counter",
+        device_class=SensorDeviceClass.DURATION if is_hours else None,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS if is_hours else None,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=enabled_by_default,
+        device_features=[str(menu_item_id)],
+        get_native_value=lambda entity: getattr(entity.device, device_property),
+        system_types=[SystemType.GALEVO],
+    )
+
+
 ARISTON_SENSOR_TYPES: list[AristonSensorEntityDescription] = [
     AristonSensorEntityDescription(
         key=DeviceProperties.DHW_TIMEPROG_COMFORT_TEMP,
@@ -381,6 +425,74 @@ ARISTON_SENSOR_TYPES: list[AristonSensorEntityDescription] = [
         device_features=[str(MENU_ITEM_HP_MODE)],
         get_native_value=lambda entity: entity.device.hp_mode_value,
         system_types=[SystemType.GALEVO],
+    ),
+    AristonSensorEntityDescription(
+        key=str(MENU_ITEM_HP_SYS_CH_FLOW_SETPOINT_TEMP),
+        name=f"{NAME} HP water flow setpoint temp",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_features=[str(MENU_ITEM_HP_SYS_CH_FLOW_SETPOINT_TEMP)],
+        get_native_value=lambda entity: entity.device.hp_ch_flow_setpoint_temp_value,
+        get_native_unit_of_measurement=lambda entity: (
+            entity.device.hp_ch_flow_setpoint_temp_unit
+        ),
+        system_types=[SystemType.GALEVO],
+    ),
+    AristonSensorEntityDescription(
+        key=str(MENU_ITEM_HP_SYS_COMPRESSOR_FREQUENCY),
+        name=f"{NAME} HP compressor frequency",
+        icon="mdi:sine-wave",
+        device_class=SensorDeviceClass.FREQUENCY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        device_features=[str(MENU_ITEM_HP_SYS_COMPRESSOR_FREQUENCY)],
+        get_native_value=lambda entity: entity.device.hp_compressor_frequency_value,
+        system_types=[SystemType.GALEVO],
+    ),
+    *(
+        _hp_counter_sensor(*counter)
+        for counter in (
+            (MENU_ITEM_HP_SYS_RUNNING_HOURS, "HP running hours", "hp_running_hours_value"),
+            (MENU_ITEM_HP_SYS_ON_CYCLES, "HP on cycles", "hp_on_cycles_value"),
+            (MENU_ITEM_HP_SYS_DEFROST_HOURS, "HP defrost hours", "hp_defrost_hours_value"),
+            (
+                MENU_ITEM_HP_SYS_HEATING_RUNNING_HOURS,
+                "HP heating running hours",
+                "hp_heating_running_hours_value",
+            ),
+            (
+                MENU_ITEM_HP_SYS_COOLING_RUNNING_HOURS,
+                "HP cooling running hours",
+                "hp_cooling_running_hours_value",
+            ),
+            (
+                MENU_ITEM_HP_SYS_DHW_RUNNING_HOURS,
+                "HP DHW running hours",
+                "hp_dhw_running_hours_value",
+            ),
+            (
+                MENU_ITEM_HP_SYS_RESISTANCE_1_RUNNING_HOURS,
+                "CH backup resistance 1 running hours",
+                "ch_backup_resistance_1_running_hours_value",
+            ),
+            (
+                MENU_ITEM_HP_SYS_RESISTANCE_1_ON_CYCLES,
+                "CH backup resistance 1 on cycles",
+                "ch_backup_resistance_1_on_cycles_value",
+            ),
+            (
+                MENU_ITEM_HP_SYS_RESISTANCE_2_RUNNING_HOURS,
+                "CH backup resistance 2 running hours",
+                "ch_backup_resistance_2_running_hours_value",
+                False,
+            ),
+            (
+                MENU_ITEM_HP_SYS_RESISTANCE_3_RUNNING_HOURS,
+                "CH backup resistance 3 running hours",
+                "ch_backup_resistance_3_running_hours_value",
+                False,
+            ),
+        )
     ),
     AristonSensorEntityDescription(
         key=str(MENU_ITEM_CH_FLOW_TEMP_BOILER),
@@ -847,6 +959,26 @@ ARISTON_BINARY_SENSOR_TYPES: list[AristonBinarySensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
         device_features=[str(MENU_ITEM_CH_BACKUP_RESISTANCE_1)],
         get_is_on=lambda entity: entity.device.ch_backup_resistance_1_value,
+        system_types=[SystemType.GALEVO],
+    ),
+    AristonBinarySensorEntityDescription(
+        key=str(MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_2),
+        name=f"{NAME} CH backup resistance 2",
+        icon="mdi:heating-coil",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        device_features=[str(MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_2)],
+        get_is_on=lambda entity: entity.device.ch_backup_resistance_2_value,
+        system_types=[SystemType.GALEVO],
+    ),
+    AristonBinarySensorEntityDescription(
+        key=str(MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_3),
+        name=f"{NAME} CH backup resistance 3",
+        icon="mdi:heating-coil",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        device_features=[str(MENU_ITEM_HP_SYS_BACKUP_RESISTANCE_3)],
+        get_is_on=lambda entity: entity.device.ch_backup_resistance_3_value,
         system_types=[SystemType.GALEVO],
     ),
     AristonBinarySensorEntityDescription(
